@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Grocery Spending Master",
+  "version": "1.0",
+  "description": "Track spending on Zepto and Blinkit.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "*://*.zepto.com/*", 
+    "*://*.zeptonow.com/*",
+    "*://*.blinkit.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
