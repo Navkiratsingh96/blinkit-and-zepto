@@ -168,7 +168,6 @@ function scrapeBlinkitV2() {
   const orders = [];
   
   // Regex to find "₹123 ... 08 Feb" pattern
-  // Matches: ₹ followed by digits, then ANY characters (.*?), then a Date (Digit + Month)
   const pattern = /₹\s?([0-9,]+).*?(\d{1,2}\s[A-Z][a-z]{2})/;
   
   const allElements = document.querySelectorAll('*');
@@ -207,7 +206,6 @@ function scrapeBlinkitV2() {
                   });
                   
                   // If we found valid products, we assume this is the right card level
-                  // But we filter "Blinkit Item" if we have better names
                   const realNames = products.filter(n => n !== "Blinkit Item");
                   if(realNames.length > 0) products = realNames;
                   
