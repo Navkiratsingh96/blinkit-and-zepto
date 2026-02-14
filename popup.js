@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
       const url = tabs[0].url;
       
-      // 1. DETERMINE WHICH SITE WE ARE ON
+      // 1. DETERMINE SITE
       let scraperFunction = null;
       let siteName = "";
 
@@ -17,14 +17,14 @@ document.addEventListener('DOMContentLoaded', () => {
         scraperFunction = scrapeZepto;
         siteName = "Zepto";
       } else if (url.includes("blinkit")) {
-        scraperFunction = scrapeBlinkit;
+        scraperFunction = scrapeBlinkitV2; // Using the NEW scraper
         siteName = "Blinkit";
       } else {
         status.textContent = "❌ Go to Zepto or Blinkit Orders page first!";
         return;
       }
 
-      // 2. RUN THE MATCHING SCRAPER
+      // 2. RUN SCRAPER
       btn.disabled = true;
       btn.innerText = `Scanning ${siteName}...`;
       status.textContent = "Analyzing page...";
@@ -39,7 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (results && results[0] && results[0].result) {
           const data = results[0].result;
           if (data.length === 0) {
-            status.textContent = "⚠️ Found 0 orders. Did you SCROLL DOWN?";
+            status.textContent = "⚠️ Found 0 orders. Try scrolling down more!";
           } else {
             saveData(data, siteName);
             status.textContent = `✅ Added ${data.length} ${siteName} orders!`;
@@ -60,15 +60,22 @@ document.addEventListener('DOMContentLoaded', () => {
 function saveData(newOrders, source) {
   chrome.storage.local.get(['expenses'], (result) => {
     const existing = result.expenses || [];
+    let added = 0;
     newOrders.forEach(item => {
-      // Add source tag (Zepto/Blinkit)
       item.source = source; 
-      // Avoid duplicates
+      // Avoid duplicates (Date + Price check)
       if (!existing.some(e => e.date === item.date && e.price === item.price)) {
         existing.push(item);
+        added++;
       }
     });
-    chrome.storage.local.set({ expenses: existing }, loadData);
+    // Refresh display
+    chrome.storage.local.set({ expenses: existing }, () => {
+        loadData();
+        const status = document.getElementById('status');
+        if(added > 0) status.textContent = `✅ Saved ${added} new orders!`;
+        else status.textContent = `ℹ️ No new orders found (Duplicates skipped).`;
+    });
   });
 }
 
@@ -87,8 +94,9 @@ function loadData() {
     const counts = {};
     expenses.forEach(o => {
       o.products.forEach(p => {
-        let name = p.split(' ').slice(0, 2).join(' '); // Group by first 2 words
-        counts[name] = (counts[name] || 0) + 1;
+        // Simple cleanup: take first 2 words
+        let name = p.replace(/[0-9]/g, '').trim().split(' ').slice(0, 2).join(' ');
+        if(name.length > 2) counts[name] = (counts[name] || 0) + 1;
       });
     });
     const sortedProds = Object.keys(counts).sort((a,b) => counts[b] - counts[a]).slice(0, 5);
@@ -103,19 +111,20 @@ function loadData() {
     // 3. BIG ORDERS
     const sortedPrice = [...expenses].sort((a,b) => b.price - a.price).slice(0, 5);
     document.getElementById('bigList').innerHTML = sortedPrice.map(o => {
-      const badgeClass = o.source === "Blinkit" ? "badge-blinkit" : "badge-zepto";
+      const badgeColor = o.source === "Blinkit" ? "#f8cb46;color:black" : "#3d0752;color:white";
       return `
       <div class="row">
-        <div><span class="${badgeClass}">${o.source || 'Zepto'}</span> <span style="font-size:11px; color:#888">${o.date}</span></div>
+        <div>
+            <span style="background:${badgeColor}; padding:2px 6px; border-radius:4px; font-size:10px;">${o.source || 'App'}</span> 
+            <span style="font-size:11px; color:#888">${o.date}</span>
+        </div>
         <span class="price-tag">₹${o.price}</span>
       </div>`;
     }).join('');
   });
 }
 
-// ==========================================
-// SCRAPER 1: ZEPTO (The one you verified works)
-// ==========================================
+// --- ZEPTO SCRAPER (Unchanged) ---
 function scrapeZepto() {
   const orders = [];
   const xpath = "//*[contains(text(), 'Placed at')]";
@@ -139,7 +148,6 @@ function scrapeZepto() {
       const priceMatch = text.match(/[₹|Rs]\s?([0-9,]+)/);
       const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : 0;
       const date = (text.match(/Placed at\s(.+)/) || [])[0] || "Unknown";
-      // Cleanup Date for display
       const cleanDate = date.replace("Placed at ", "").split(",")[0];
 
       const products = [];
@@ -155,67 +163,68 @@ function scrapeZepto() {
   return orders;
 }
 
-// ==========================================
-// SCRAPER 2: BLINKIT (New!)
-// ==========================================
-function scrapeBlinkit() {
+// --- NEW BLINKIT SCRAPER (Regex + Robustness) ---
+function scrapeBlinkitV2() {
   const orders = [];
   
-  // Blinkit uses a specific format: "₹55 • 08 Feb, 6:47 pm"
-  // We search for elements containing the "•" dot and the "₹" symbol
-  const allDivs = document.querySelectorAll('div, p, span');
+  // Regex to find "₹123 ... 08 Feb" pattern
+  // Matches: ₹ followed by digits, then ANY characters (.*?), then a Date (Digit + Month)
+  const pattern = /₹\s?([0-9,]+).*?(\d{1,2}\s[A-Z][a-z]{2})/;
   
-  allDivs.forEach(el => {
-    // Check if text has the pattern "₹... • ..."
-    // We strictly check for children length to avoid grabbing the main wrapper
-    if (el.innerText.includes('₹') && el.innerText.includes('•') && el.children.length === 0) {
-      
-      const text = el.innerText;
-      
-      // 1. EXTRACT PRICE
-      // Regex looks for ₹ followed by digits
-      const priceMatch = text.match(/₹([0-9,]+)/);
-      if (!priceMatch) return;
-      const price = parseFloat(priceMatch[1].replace(/,/g, ''));
-      
-      // 2. EXTRACT DATE
-      // Regex looks for text AFTER the dot
-      const dateMatch = text.match(/•\s(.+)/);
-      let dateStr = "Unknown";
-      if (dateMatch) {
-         // "08 Feb, 6:47 pm" -> just take "08 Feb" for simplicity
-         dateStr = dateMatch[1].split(',')[0]; 
-      }
-      
-      // 3. EXTRACT PRODUCTS
-      // The image is usually in the "Grandparent" or "Great-Grandparent" of the text row
-      const products = [];
-      let card = el.parentElement;
-      
-      // Climb up 4 levels to find the row container
-      for(let k=0; k<4; k++) {
-         if(!card) break;
-         const imgs = card.querySelectorAll('img');
-         if(imgs.length > 0) {
-             imgs.forEach(img => {
-                 // Blinkit images usually don't have good Alt text, 
-                 // but sometimes they do. If not, we just count them.
-                 // We ignore icons which are usually small or SVGs
-                 if(!img.src.includes('arrow') && !img.src.includes('icon')) {
-                     products.push(img.alt || "Blinkit Item");
-                 }
-             });
-             // If we found images, we assume this is the right card level
-             if(products.length > 0) break;
-         }
-         card = card.parentElement;
-      }
+  const allElements = document.querySelectorAll('*');
+  
+  allElements.forEach(el => {
+    // Only look at elements with direct text (leaf nodes)
+    if(el.children.length === 0 && el.innerText) {
+       const text = el.innerText.trim();
+       const match = text.match(pattern);
+       
+       if(match) {
+           const price = parseFloat(match[1].replace(/,/g, ''));
+           const dateStr = match[2]; // e.g., "08 Feb"
+           
+           // Find the Card Container to get images
+           let card = el.parentElement;
+           let products = [];
+           
+           // Climb up to find images (max 6 levels)
+           for(let k=0; k<6; k++) {
+              if(!card) break;
+              
+              // Look for images in this container
+              const imgs = card.querySelectorAll('img');
+              if(imgs.length > 0) {
+                  imgs.forEach(img => {
+                      const src = (img.src || "").toLowerCase();
+                      const alt = (img.alt || "").trim();
+                      
+                      // Skip UI icons
+                      if(src.includes('arrow') || src.includes('clock') || src.includes('icon') || src.includes('star')) return;
+                      
+                      // If alt text exists, use it. If not, it's a mystery item.
+                      if(alt.length > 1) products.push(alt);
+                      else if(img.width > 30) products.push("Blinkit Item"); 
+                  });
+                  
+                  // If we found valid products, we assume this is the right card level
+                  // But we filter "Blinkit Item" if we have better names
+                  const realNames = products.filter(n => n !== "Blinkit Item");
+                  if(realNames.length > 0) products = realNames;
+                  
+                  if(products.length > 0) break; 
+              }
+              card = card.parentElement;
+           }
+           
+           // If no products found, default to generic
+           if(products.length === 0) products.push("Blinkit Order");
 
-      orders.push({
-          date: dateStr,
-          price: price,
-          products: products
-      });
+           orders.push({
+               date: dateStr,
+               price: price,
+               products: products
+           });
+       }
     }
   });
   
